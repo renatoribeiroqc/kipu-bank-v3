@@ -92,6 +92,11 @@ Notes:
 - Ethers v6 enforces EIP‑55 checksum: paste addresses exactly as above (or all lowercase).
 - `_bankCapUsdc6` uses 6‑decimals. Example conversions: `100000000` → $100.00, `5000000000` → $5,000.00. Enter plain integers (no underscores).
 
+### Deployed Address (Sepolia)
+
+- Contract: `0xe209966a90da0bbd2e6fe06f5bc40df2b01ade51`
+- Explorer: https://sepolia.etherscan.io/address/0xe209966a90da0bbd2e6fe06f5bc40df2b01ade51
+
 ---
 
 ## Interaction (Testnet)
