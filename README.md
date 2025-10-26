@@ -94,8 +94,8 @@ Notes:
 
 ### Deployed Address (Sepolia)
 
-- Contract: `0xe209966a90da0bbd2e6fe06f5bc40df2b01ade51`
-- Explorer: https://sepolia.etherscan.io/address/0xe209966a90da0bbd2e6fe06f5bc40df2b01ade51
+- Contract: `0xf655805936404943cddd07e41f28c9f956b85e6b`
+- Explorer: https://sepolia.etherscan.io/address/0xf655805936404943cddd07e41f28c9f956b85e6b
 
 ---
 

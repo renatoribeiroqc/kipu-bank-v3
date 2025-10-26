@@ -393,6 +393,10 @@ contract KipuBankV3 is ReentrancyGuardLite, AdminControl {
         uint128 minAmountOut,
         uint256 deadline
     ) external nonReentrant returns (uint256 amountOut) {
+
+        // Add zero-value check
+        if (amountIn == 0) revert AmountZero();
+
         // Build minimal Universal Router payload (commands + a single input encoding actions + params)
         bytes memory commandsBytes = abi.encodePacked(uint8(Commands.V4_SWAP));
         bytes[] memory inputs = new bytes[](1);
@@ -485,6 +489,10 @@ contract KipuBankV3 is ReentrancyGuardLite, AdminControl {
         PoolKey calldata key,
         uint256 deadline
     ) internal returns (uint256 usdcOut) {
+
+        // Add zero-value check
+        if (amountIn == 0) revert AmountZero();
+
         require(Currency.unwrap(key.currency1) == address(USDC), "PoolKey: out != USDC");
         require(Currency.unwrap(key.currency0) == tokenIn, "PoolKey: in mismatch");
 
