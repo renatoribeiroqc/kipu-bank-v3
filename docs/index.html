@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>KipuBank • Student Demo (Multi-token)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+  <style>
+    body { background: #f7f9fc; }
+    .app { max-width: 520px; margin: 0 auto; padding: 16px; }
+    .card { border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.06); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .disabled-card { opacity:.55; pointer-events:none; filter: grayscale(.1); }
+    .fullw { width: 100%; }
+    .tiny { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <div>
+        <h1 class="h5 mb-0">KipuBank – Multi-token Demo</h1>
+        <div id="network" class="small text-secondary">Not connected</div>
+      </div>
+      <button id="btnConnect" class="btn btn-primary btn-sm">Connect Wallet</button>
+    </div>
+
+    <!-- Step 1: attach contract -->
+    <div id="cardAttach" class="card mb-3">
+      <div class="card-body">
+        <div class="h6 mb-2">Step 1 — Contract</div>
+        <label class="form-label small">Contract Address</label>
+        <input id="contractAddress" class="form-control mono" type="text" placeholder="0xKipuBankV2" />
+        <button id="btnAttach" class="btn btn-outline-secondary fullw mt-2">Attach</button>
+        <div class="row g-2 mt-3">
+          <div class="col-4">
+            <div class="small text-secondary">Cap (USD-6)</div>
+            <div id="cap" class="mono">—</div>
+          </div>
+          <div class="col-4">
+            <div class="small text-secondary">Total (USD-6)</div>
+            <div id="total" class="mono">—</div>
+          </div>
+          <div class="col-4">
+            <div class="small text-secondary">Version</div>
+            <div id="version" class="mono">—</div>
+          </div>
+        </div>
+        <div id="s1" class="tiny text-secondary mt-2">Paste the deployed address and click Attach.</div>
+      </div>
+    </div>
+
+    <!-- Step 2: choose asset -->
+    <div id="cardAsset" class="card mb-3 disabled-card">
+      <div class="card-body">
+        <div class="h6 mb-2">Step 2 — Choose Asset</div>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="asset" id="assetETH" checked>
+          <label class="form-check-label" for="assetETH">ETH (address(0))</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="radio" name="asset" id="assetERC20">
+          <label class="form-check-label" for="assetERC20">ERC-20 token</label>
+        </div>
+        <div id="erc20Row" class="mt-2" style="display:none;">
+          <label class="form-label small">Token Address (ERC-20)</label>
+          <input id="tokenAddr" class="form-control mono" type="text" placeholder="0xToken..." />
+        </div>
+
+        <div class="mt-3">
+          <button id="btnSelectAsset" class="btn btn-outline-primary fullw">Use this asset</button>
+        </div>
+        <div id="s2" class="tiny text-secondary mt-2">Select ETH or paste a token address.</div>
+      </div>
+    </div>
+
+    <!-- Step 3: interact -->
+    <div id="cardUse" class="card mb-3 disabled-card">
+      <div class="card-body">
+        <div class="h6 mb-2">Step 3 — Use Vault</div>
+        <div class="mb-2">
+          <label class="form-label small">My Address</label>
+          <input id="me" class="form-control mono" type="text" readonly />
+        </div>
+        <div class="mb-2">
+          <label class="form-label small">My Balance (selected asset)</label>
+          <input id="myBal" class="form-control mono" type="text" readonly />
+        </div>
+
+        <div class="d-flex gap-2 mb-2">
+          <button id="btnRefresh" class="btn btn-outline-secondary flex-fill">Refresh</button>
+        </div>
+
+        <div class="row g-2 align-items-end">
+          <div class="col-7">
+            <label class="form-label small">Deposit Amount</label>
+            <input id="amtIn" type="number" inputmode="decimal" min="0" step="0.0001" placeholder="0.10" class="form-control" />
+          </div>
+          <div class="col-5">
+            <button id="btnDeposit" class="btn btn-success fullw">Deposit</button>
+          </div>
+          <div class="col-12 tiny text-secondary" id="preview">Preview: —</div>
+          <div class="col-7">
+            <label class="form-label small">Withdraw Amount</label>
+            <input id="amtOut" type="number" inputmode="decimal" min="0" step="0.0001" placeholder="0.05" class="form-control" />
+          </div>
+          <div class="col-5">
+            <button id="btnWithdraw" class="btn btn-warning fullw">Withdraw</button>
+          </div>
+        </div>
+
+        <div id="counters" class="small text-secondary mt-2">Deposits: — · Withdrawals: —</div>
+        <div id="s3" class="tiny text-secondary mt-2">Attach, choose asset, then deposit or withdraw.</div>
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div id="cardLogs" class="card disabled-card">
+      <div class="card-body">
+        <div class="h6 mb-2">Logs</div>
+        <div id="logs" class="small mono">—</div>
+      </div>
+    </div>
+
+    <p class="small text-center text-secondary mt-3 mb-0">
+      Use Sepolia/Holesky. Token must be enabled by admin in the contract.
+    </p>
+  </div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const fmtEth = (wei) => ethers.formatEther(wei);           // 18-decimal display
+  const toWei = (eth) => ethers.parseEther(String(eth));
+  const fmtUsd6 = (n) => `${Number(n)/1e6}`;                 // naive USD-6 print
+
+  // ABI matches contracts/KipuBank.sol (V2)
+  const abi = [
+    "function VERSION() view returns (string)",
+    "function ETH_ADDRESS() view returns (address)",
+    "function bankCapUsd6() view returns (uint256)",
+    "function totalUsd6() view returns (uint256)",
+    "function depositCount() view returns (uint256)",
+    "function withdrawalCount() view returns (uint256)",
+    "function tokenConfig(address) view returns (bool enabled, uint8 decimals, address feed)",
+    "function quoteToUsd6(address token, uint256 amount) view returns (uint256)",
+    "function balanceOf(address token, address account) view returns (uint256)",
+    "function depositETH() payable",
+    "function depositERC20(address token, uint256 amount)",
+    "function withdraw(address token, uint256 amount, address to)"
+  ];
+
+  let provider, signer, me, contract, ETH_SENTINEL, currentToken = null;
+
+  // enable/disable cards
+  function setEnabled(id, on) {
+    $(id).classList.toggle('disabled-card', !on);
+  }
+
+  function log(line, ok = true) {
+    const el = $("logs");
+    el.textContent = (el.textContent === "—" ? "" : el.textContent + "\n") + (ok ? "✅ " : "⛔ ") + line;
+  }
+
+  async function refreshHeader() {
+    if (!contract) return;
+    const [cap, tot, ver] = await Promise.all([
+      contract.bankCapUsd6(), contract.totalUsd6(), contract.VERSION()
+    ]);
+    $("cap").textContent = cap.toString();
+    $("total").textContent = tot.toString();
+    $("version").textContent = ver;
+    const [dep, wdr] = await Promise.all([contract.depositCount(), contract.withdrawalCount()]);
+    $("counters").textContent = `Deposits: ${dep} · Withdrawals: ${wdr}`;
+  }
+
+  async function refreshBalance() {
+    if (!contract || !me || !currentToken) return;
+    const bal = await contract.balanceOf(currentToken, me);
+    // Display using 18-decimal formatter for ETH; for ERC20 we’ll just show raw units
+    if (currentToken === ETH_SENTINEL) $("myBal").value = fmtEth(bal);
+    else $("myBal").value = bal.toString();
+  }
+
+  // Wallet connect
+  $("btnConnect").onclick = async () => {
+    if (!window.ethereum) { $("network").textContent = "MetaMask not found"; return; }
+    provider = new ethers.BrowserProvider(window.ethereum);
+    await provider.send("eth_requestAccounts", []);
+    signer = await provider.getSigner();
+    me = await signer.getAddress();
+    const net = await provider.getNetwork();
+    $("network").textContent = `Connected: ${net.name ?? "unknown"} (chainId ${net.chainId})`;
+    $("me").value = me;
+  };
+
+  // Attach contract
+  $("btnAttach").onclick = async () => {
+    try {
+      const addr = $("contractAddress").value.trim();
+      if (!ethers.isAddress(addr)) { $("s1").textContent = "Invalid contract address"; return; }
+      contract = new ethers.Contract(addr, abi, signer || (provider && (await provider.getSigner())));
+      ETH_SENTINEL = await contract.ETH_ADDRESS();
+      await refreshHeader();
+      setEnabled("cardAsset", true);
+      setEnabled("cardLogs", true);
+      $("s1").textContent = "Attached. Choose an asset.";
+    } catch (e) {
+      console.error(e); $("s1").textContent = e?.reason || e?.message || "Attach failed";
+    }
+  };
+
+  // Toggle ERC20 input visibility
+  $("assetERC20").onchange = () => { $("erc20Row").style.display = "block"; };
+  $("assetETH").onchange   = () => { $("erc20Row").style.display = "none";  };
+
+  // Select asset
+  $("btnSelectAsset").onclick = async () => {
+    try {
+      if (!contract) { $("s2").textContent = "Attach contract first."; return; }
+      if ($("assetETH").checked) {
+        currentToken = ETH_SENTINEL;
+        $("s2").textContent = "ETH selected.";
+      } else {
+        const t = $("tokenAddr").value.trim();
+        if (!ethers.isAddress(t)) { $("s2").textContent = "Invalid token address"; return; }
+        // Optional: show if the token is enabled
+        const cfg = await contract.tokenConfig(t);
+        if (!cfg[0]) { $("s2").textContent = "Token not enabled by admin"; return; }
+        currentToken = t;
+        $("s2").textContent = `Token selected: ${t}`;
+      }
+      setEnabled("cardUse", true);
+      await refreshBalance();
+    } catch (e) {
+      console.error(e); $("s2").textContent = e?.reason || e?.message || "Select asset failed";
+    }
+  };
+
+  // Preview USD-6 for deposit amount
+  $("amtIn").oninput = async () => {
+    try {
+      if (!contract || !currentToken) { $("preview").textContent = "Preview: —"; return; }
+      const val = $("amtIn").value;
+      if (!val || Number(val) <= 0) { $("preview").textContent = "Preview: —"; return; }
+      let amount;
+      if (currentToken === ETH_SENTINEL) amount = toWei(val);
+      else amount = ethers.parseUnits(String(val), 0); // show raw units entry for ERC20 (simple)
+      const usd6 = await contract.quoteToUsd6(currentToken, amount);
+      $("preview").textContent = `Preview: ${usd6.toString()} (USD-6)`;
+    } catch { $("preview").textContent = "Preview: —"; }
+  };
+
+  $("btnRefresh").onclick = async () => { await refreshHeader(); await refreshBalance(); };
+
+  // Deposit
+  $("btnDeposit").onclick = async () => {
+    try {
+      if (!contract || !currentToken) { $("s3").textContent = "Select asset first."; return; }
+      const val = $("amtIn").value;
+      if (!val || Number(val) <= 0) { $("s3").textContent = "Enter a deposit > 0."; return; }
+      if (currentToken === ETH_SENTINEL) {
+        const tx = await contract.depositETH({ value: toWei(val) });
+        await tx.wait(); log(`Deposited ${val} ETH`);
+      } else {
+        // For ERC20, user must have approved beforehand (out of scope for a tiny demo)
+        const amount = ethers.parseUnits(String(val), 0); // raw units
+        const tx = await contract.depositERC20(currentToken, amount);
+        await tx.wait(); log(`Deposited ${amount.toString()} token units`);
+      }
+      await refreshHeader(); await refreshBalance();
+    } catch (e) {
+      console.error(e); log(`Deposit failed: ${e?.reason || e?.message}`, false);
+      $("s3").textContent = e?.reason || e?.message || "Deposit failed";
+    }
+  };
+
+  // Withdraw
+  $("btnWithdraw").onclick = async () => {
+    try {
+      if (!contract || !currentToken) { $("s3").textContent = "Select asset first."; return; }
+      const val = $("amtOut").value;
+      if (!val || Number(val) <= 0) { $("s3").textContent = "Enter a withdrawal > 0."; return; }
+      const to = me;
+      let amount;
+      if (currentToken === ETH_SENTINEL) amount = toWei(val);
+      else amount = ethers.parseUnits(String(val), 0);
+      const tx = await contract.withdraw(currentToken, amount, to);
+      await tx.wait(); log(`Withdrew ${currentToken===ETH_SENTINEL ? val+' ETH' : amount.toString()+' units'}`);
+      await refreshHeader(); await refreshBalance();
+    } catch (e) {
+      console.error(e); log(`Withdraw failed: ${e?.reason || e?.message}`, false);
+      $("s3").textContent = e?.reason || e?.message || "Withdraw failed";
+    }
+  };
+})();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
