@@ -290,9 +290,23 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
     ) external nonReentrant {
         if (amountIn == 0) revert AmountZero();
 
-        // Direct USDC path: no router call needed.
+        // Direct USDC path: pull and credit here (can't call external nonReentrant function internally).
         if (token == USDC) {
-            depositUSDC(amountIn);
+            USDC.safeTransferFrom(msg.sender, address(this), amountIn);
+            uint256 remaining = capRemaining();
+            uint256 credit = amountIn <= remaining ? amountIn : remaining;
+            uint256 refund = amountIn - credit;
+            if (credit == 0) revert BankCapExceeded(totalUsdc + amountIn, bankCapUsdc6);
+
+            unchecked { depositCount++; }
+            balanceUsdc[msg.sender] += credit;
+            totalUsdc += credit;
+
+            if (refund > 0) {
+                USDC.safeTransfer(msg.sender, refund);
+            }
+
+            emit DepositedUSDC(msg.sender, credit, balanceUsdc[msg.sender], totalUsdc);
             return;
         }
 
