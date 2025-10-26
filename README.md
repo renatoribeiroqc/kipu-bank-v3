@@ -21,18 +21,19 @@ KipuBankV3 upgrades KipuBankV2 into a USDC‑denominated vault that accepts ETH,
 
 ## Contract
 
-- Path: `contracts/KipuBankV3.sol`
+- Path: `contracts/KipuBankV3.sol` (single Remix‑friendly file with minimal interfaces)
 - Key immutables:
   - `USDC` — IERC20 (6 decimals)
-  - `universalRouter` — IUniversalRouter
-  - `permit2` — IPermit2 (optional hook for future permit‑based deposits)
+  - `universalRouter` — IUniversalRouter (Uniswap v4 Universal Router)
+  - `permit2` — IPermit2 (placeholder for future permit‑based deposits)
 - Core state:
   - `bankCapUsdc6`, `totalUsdc`, `balanceUsdc[user]`
 - Core functions:
   - `depositUSDC(uint256 amount)`
   - `depositETH(bytes commands, bytes[] inputs, uint256 minUsdcOut, uint256 deadline)` — generic Universal Router call; encode min‑out in inputs; passes deadline to router
   - `depositArbitraryToken(IERC20 token, uint256 amountIn, bytes commands, bytes[] inputs, uint256 minUsdcOut, uint256 deadline)` — generic router for ERC‑20 with deadline
-  - `_swapExactInputSingle(address tokenIn, uint256 amountIn, uint256 minUsdcOut, bytes commands, bytes[] inputs, PoolKey key)` — internal helper using v4 types (`PoolKey`, `Currency`) for validation while executing provided router payload (your `commands/inputs` must include min‑out and will be executed with the external deadline)
+  - `_swapExactInputSingle(address tokenIn, uint256 amountIn, bytes commands, bytes[] inputs, PoolKey key, uint256 deadline)` — internal helper using v4‑style types (`PoolKey`, `Currency`) for validation while executing provided router payload (your `commands/inputs` must include min‑out and will be executed with the external deadline)
+  - `swapExactInputSingle(PoolKey key, uint128 amountIn, uint128 minAmountOut, uint256 deadline)` — example builder that demonstrates `Commands` and `Actions` encoding; measures output as a delta
   - `withdrawUSDC(uint256 amountUsdc, address to)`
   - `adminRecover(address user, uint256 newUsdc, string reason)`
 
@@ -50,7 +51,7 @@ Router execution is generic: we pass `commands` and `inputs` to the Universal Ro
 
 ---
 
-## Deployment
+## Deployment (Remix)
 
 Constructor:
 
@@ -62,9 +63,10 @@ Suggested testnet addresses (Sepolia/Holesky):
 - Permit2: optional; can be the official Permit2 address or zero if unused.
 
 Steps (Remix):
-1) Compile `contracts/KipuBankV3.sol` (Solidity 0.8.24+, optimizer on, 200 runs).
-2) Deploy with the addresses above and an initial `bankCapUsdc6` (e.g., `5_000_000` for $5,000.000).
-3) Verify on a block explorer (match compiler + optimizer settings).
+1) Open `contracts/KipuBankV3.sol`, set compiler 0.8.24+, optimizer on, 200 runs.
+2) Compile (no external imports required; minimal interfaces are embedded).
+3) Deploy with the addresses above and an initial `bankCapUsdc6` (e.g., `5_000_000` for $5,000.000).
+4) Verify on a block explorer (match compiler + optimizer settings).
 
 ---
 
@@ -89,7 +91,7 @@ Admin:
 
 ## Design Notes / Trade‑offs
 
-- Router Encoding: We keep router calls generic to remain aligned with official router libraries on testnet. Use Uniswap’s v4 libraries to build `commands/inputs` and provide a `PoolKey` for typed validation.
+- Router Encoding: We keep router calls generic to remain aligned with official router libraries on testnet. Use Uniswap’s v4 libraries (or official helpers) to build `commands/inputs` and provide a `PoolKey` for typed validation. This repo embeds minimal `Commands/Actions` constants and `PoolKey/Currency` types for Remix.
 - Cap Enforcement on USDC: Unlike V2 which valued deposits via oracles, V3 enforces cap strictly on realized USDC units post‑swap — removing oracle dependency for cap math while still allowing oracle views for UX.
 - Approvals: We reset router approval to zero after swaps to reduce long‑lived approvals. This costs extra gas but is safer by default.
 

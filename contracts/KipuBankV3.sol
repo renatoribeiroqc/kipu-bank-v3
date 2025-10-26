@@ -4,53 +4,98 @@ pragma solidity ^0.8.24;
 /**
  * KipuBankV3 — USDC‑denominated vault with Uniswap v4 Universal Router integration
  *
+ * Remix‑friendly single file: includes minimal interfaces and a lightweight reentrancy guard.
+ *
  * Goals (per spec):
  * - Accept ETH, USDC, and any ERC‑20 supported by Uniswap v4.
  * - For non‑USDC deposits, swap to USDC inside the contract via Universal Router, then credit user.
- * - Enforce a global bank cap in USDC units and preserve V2 safety (CEI, reentrancy guard, roles, oracle views).
+ * - Enforce a global bank cap in USDC units and preserve V2 safety (CEI, reentrancy guard, admin, oracle views).
  * - Keep per‑tx withdrawal policy ($1,000 USD‑6 cap) and admin recovery.
- *
- * Notes on integration:
- * - This contract owns tokens during swaps. It approves the Universal Router to spend inputs and receives USDC out.
- * - We expose generic `commands` and `inputs` parameters so callers can encode Uniswap v4 router actions precisely
- *   (single‑hop or multi‑hop). This avoids coupling to a specific helper library while remaining fully programmatic.
- * - For convenience and auditability, we strictly account in USDC (6 decimals). The bank cap is enforced on USDC units.
  */
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+// ---------- Minimal Interfaces / Libraries (Remix‑ready) ----------
 
-// Uniswap v4 and Universal Router (per Quickstart docs)
-import { UniversalRouter } from "@uniswap/universal-router/contracts/UniversalRouter.sol";
-import { Commands } from "@uniswap/universal-router/contracts/libraries/Commands.sol";
-import { IV4Router } from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
-import { Actions } from "@uniswap/v4-periphery/src/libraries/Actions.sol";
-import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
-import { IPermit2 } from "@uniswap/permit2/src/interfaces/IPermit2.sol";
-import { Currency } from "@uniswap/v4-core/src/types/Currency.sol";
-import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 value) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
 
-using StateLibrary for IPoolManager;
+library SafeERC20 {
+    function safeTransfer(IERC20 token, address to, uint256 value) internal {
+        (bool ok, bytes memory data) = address(token).call(abi.encodeWithSelector(token.transfer.selector, to, value));
+        require(ok && (data.length == 0 || abi.decode(data, (bool))), "SafeERC20: transfer failed");
+    }
+    function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+        (bool ok, bytes memory data) = address(token).call(abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+        require(ok && (data.length == 0 || abi.decode(data, (bool))), "SafeERC20: transferFrom failed");
+    }
+    function safeApprove(IERC20 token, address spender, uint256 value) internal {
+        (bool ok, bytes memory data) = address(token).call(abi.encodeWithSelector(token.approve.selector, spender, value));
+        require(ok && (data.length == 0 || abi.decode(data, (bool))), "SafeERC20: approve failed");
+    }
+}
+
+interface IUniversalRouter {
+    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable;
+}
+
+interface IPermit2 { /* placeholder for future use */ }
 
 /// Chainlink Aggregator v3 interface for read‑only price views (kept from V2 for observability/analytics).
 interface AggregatorV3Interface {
     function decimals() external view returns (uint8);
-    function latestRoundData()
-        external
-        view
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        );
+    function latestRoundData() external view returns (
+        uint80 roundId,
+        int256 answer,
+        uint256 startedAt,
+        uint256 updatedAt,
+        uint80 answeredInRound
+    );
 }
 
-contract KipuBankV3 is AccessControl, ReentrancyGuard {
+/// Lightweight reentrancy guard (Remix‑friendly)
+abstract contract ReentrancyGuardLite {
+    uint256 private _guard;
+    modifier nonReentrant() {
+        require(_guard == 0, "REENTRANCY");
+        _guard = 1;
+        _;
+        _guard = 0;
+    }
+}
+
+/// Lightweight admin control (single admin similar to Ownable)
+abstract contract AdminControl {
+    address public admin;
+    event AdminTransferred(address indexed oldAdmin, address indexed newAdmin);
+    modifier onlyAdmin() { require(msg.sender == admin, "NOT_ADMIN"); _; }
+    function _initAdmin(address a) internal { require(a != address(0), "admin=0"); admin = a; emit AdminTransferred(address(0), a); }
+    function transferAdmin(address newAdmin) external onlyAdmin { require(newAdmin != address(0), "admin=0"); emit AdminTransferred(admin, newAdmin); admin = newAdmin; }
+}
+
+// ---------- Uniswap v4 Types (light shims for typing/encoding) ----------
+
+library Commands { uint8 constant V4_SWAP = 0x0b; }
+library Actions {
+    uint8 constant SWAP_EXACT_IN_SINGLE = 0x00;
+    uint8 constant SETTLE_ALL           = 0x02;
+    uint8 constant TAKE_ALL             = 0x03;
+}
+
+type Currency is address;
+struct PoolKey {
+    Currency currency0; // token in
+    Currency currency1; // token out (USDC)
+    uint24   fee;       // pool fee tier
+}
+
+contract KipuBankV3 is ReentrancyGuardLite, AdminControl {
     using SafeERC20 for IERC20;
 
     // ========= Constants =========
@@ -64,16 +109,13 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
     /// Per‑tx withdraw limit: $1,000 (USD‑6) — same as V2 policy.
     uint256 public constant USD6_1000 = 1_000 * 1e6;
 
-    /// Role allowed to configure caps and operational parameters.
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-
     // ========= Immutable Protocol Addresses =========
 
     /// Canonical USDC token (must be 6 decimals) used for all balances held by the bank.
     IERC20 public immutable USDC;
 
     /// Uniswap v4 Universal Router used to execute swaps (exact input, single or multi‑hop).
-    UniversalRouter public immutable router;
+    IUniversalRouter public immutable universalRouter;
 
     /// Optional Permit2 instance for future permit‑based deposits (not required for basic flow).
     IPermit2 public immutable permit2;
@@ -119,28 +161,24 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
     // ========= Constructor =========
 
     /**
-     * @param admin            Address to receive DEFAULT_ADMIN_ROLE and ADMIN_ROLE.
+     * @param admin_           Address to receive admin rights.
      * @param usdc             USDC token address (6 decimals required).
      * @param router           Uniswap v4 Universal Router address.
      * @param permit2_         Optional Permit2 address (can be zero address if unused).
      * @param _bankCapUsdc6    Global bank cap in USDC units (USD‑6).
      */
     constructor(
-        address admin,
+        address admin_,
         IERC20 usdc,
-        UniversalRouter router_,
+        IUniversalRouter router,
         IPermit2 permit2_,
         uint256 _bankCapUsdc6
     ) {
-        require(admin != address(0), "admin=0");
         require(address(usdc) != address(0), "usdc=0");
-        require(address(router_) != address(0), "router=0");
-
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
-
+        require(address(router) != address(0), "router=0");
+        _initAdmin(admin_);
         USDC = usdc;
-        router = router_;
+        universalRouter = router;
         permit2 = permit2_;
         bankCapUsdc6 = _bankCapUsdc6;
     }
@@ -148,12 +186,12 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
     // ========= Admin =========
 
     /// Update the global USDC (USD‑6) bank cap.
-    function setBankCapUsdc6(uint256 newCap) external onlyRole(ADMIN_ROLE) {
+    function setBankCapUsdc6(uint256 newCap) external onlyAdmin {
         bankCapUsdc6 = newCap;
     }
 
     /// Admin recovery to correct a user's USDC balance and keep totals coherent (auditable event).
-    function adminRecover(address user, uint256 newUsdc, string calldata reason) external onlyRole(ADMIN_ROLE) {
+    function adminRecover(address user, uint256 newUsdc, string calldata reason) external onlyAdmin {
         uint256 old = balanceUsdc[user];
         if (old == newUsdc) return;
 
@@ -177,7 +215,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
     mapping(address => AggregatorV3Interface) public priceFeed;
 
     /// Admin: register or update a Chainlink Aggregator for a token.
-    function setPriceFeed(address token, AggregatorV3Interface feed) external onlyRole(ADMIN_ROLE) {
+    function setPriceFeed(address token, AggregatorV3Interface feed) external onlyAdmin {
         priceFeed[token] = feed;
     }
 
@@ -207,7 +245,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         if (amount == 0) revert AmountZero();
 
         // Pull USDC into this contract first (CEI: state updated only after custody confirmed).
-        USDC.safeTransferFrom(msg.sender, address(this), amount);
+        SafeERC20.safeTransferFrom(USDC, msg.sender, address(this), amount);
 
         // Enforce bank cap. Credit up to remaining and refund any excess immediately.
         uint256 remaining = capRemaining();
@@ -222,7 +260,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
 
         // Refund excess amount directly to the depositor (if any).
         if (refund > 0) {
-            USDC.safeTransfer(msg.sender, refund);
+            SafeERC20.safeTransfer(USDC, msg.sender, refund);
         }
 
         emit DepositedUSDC(msg.sender, credit, balanceUsdc[msg.sender], totalUsdc);
@@ -251,7 +289,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         uint256 beforeBal = USDC.balanceOf(address(this));
 
         // Execute router swap. Router consumes msg.value as ETH input and returns USDC to this contract.
-        router.execute{value: msg.value}(commands, inputs, deadline);
+        universalRouter.execute{value: msg.value}(commands, inputs, deadline);
 
         uint256 afterBal = USDC.balanceOf(address(this));
         uint256 usdcOut = afterBal - beforeBal;
@@ -287,7 +325,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
 
         // Direct USDC path: pull and credit here (can't call external nonReentrant function internally).
         if (token == USDC) {
-            USDC.safeTransferFrom(msg.sender, address(this), amountIn);
+            SafeERC20.safeTransferFrom(USDC, msg.sender, address(this), amountIn);
             uint256 remCap = capRemaining();
             uint256 credit = amountIn <= remCap ? amountIn : remCap;
             uint256 refund = amountIn - credit;
@@ -298,7 +336,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
             totalUsdc += credit;
 
             if (refund > 0) {
-                USDC.safeTransfer(msg.sender, refund);
+                SafeERC20.safeTransfer(USDC, msg.sender, refund);
             }
 
             emit DepositedUSDC(msg.sender, credit, balanceUsdc[msg.sender], totalUsdc);
@@ -310,20 +348,23 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         if (minUsdcOut > remaining) revert BankCapExceeded(totalUsdc + minUsdcOut, bankCapUsdc6);
 
         // Pull tokens into custody.
-        token.safeTransferFrom(msg.sender, address(this), amountIn);
+        SafeERC20.safeTransferFrom(token, msg.sender, address(this), amountIn);
 
         // Grant spend approval to the router for the exact amount (minimize long‑lived approvals).
-        token.safeIncreaseAllowance(address(router), amountIn);
+        // set to 0 then to amount to be safe across non‑standard ERC-20s
+        SafeERC20.safeApprove(token, address(universalRouter), 0);
+        SafeERC20.safeApprove(token, address(universalRouter), amountIn);
 
         uint256 beforeUsdc = USDC.balanceOf(address(this));
         // Execute router actions which will take `token` from this contract and pay USDC here.
-        router.execute( commands, inputs, deadline );
+        universalRouter.execute(commands, inputs, deadline);
         uint256 afterUsdc = USDC.balanceOf(address(this));
         uint256 usdcOut = afterUsdc - beforeUsdc;
 
         // Best effort to reset allowance back to zero for the amount used (defensive; optional for gas).
         // If the router partially consumes, we set allowance to 0 to avoid leftover approvals.
-        token.forceApprove(address(router), 0);
+        // best effort reset approval
+        SafeERC20.safeApprove(token, address(universalRouter), 0);
 
         emit SwappedToUSDC(msg.sender, address(token), amountIn, usdcOut);
 
@@ -341,41 +382,35 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         uint128 amountIn,
         uint128 minAmountOut,
         uint256 deadline
-    ) external returns (uint256 amountOut) {
-        // Encode the Universal Router command for a v4 swap
-        bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
+    ) external nonReentrant returns (uint256 amountOut) {
+        // Build minimal Universal Router payload (commands + a single input encoding actions + params)
+        bytes memory commandsBytes = abi.encodePacked(uint8(Commands.V4_SWAP));
         bytes[] memory inputs = new bytes[](1);
 
-        // Encode the V4Router actions sequence: exact-in single, settle, then take output
+        // Actions: exact-in single -> settle all -> take all
         bytes memory actions = abi.encodePacked(
             uint8(Actions.SWAP_EXACT_IN_SINGLE),
             uint8(Actions.SETTLE_ALL),
             uint8(Actions.TAKE_ALL)
         );
 
-        // Prepare parameters matching the actions sequence
+        // Encode params generically to avoid importing periphery types
+        // Layout mirrors: (PoolKey, bool zeroForOne, uint128 amountIn, uint128 minOut, bytes hookData)
         bytes[] memory params = new bytes[](3);
-        params[0] = abi.encode(
-            IV4Router.ExactInputSingleParams({
-                poolKey: key,
-                zeroForOne: true, // swap currency0 -> currency1; caller must set poolKey ordering accordingly
-                amountIn: amountIn,
-                amountOutMinimum: minAmountOut,
-                hookData: bytes("")
-            })
-        );
+        params[0] = abi.encode(key, true, amountIn, minAmountOut, bytes(""));
         params[1] = abi.encode(key.currency0, amountIn);        // settle input
         params[2] = abi.encode(key.currency1, minAmountOut);    // take output
-
-        // Combine actions and params into inputs for the router
         inputs[0] = abi.encode(actions, params);
 
-        // Execute the swap via the router
-        router.execute(commands, inputs, deadline);
+        // Pre & post balance delta on currency1 (must be an ERC-20)
+        address outToken = Currency.unwrap(key.currency1);
+        uint256 beforeBal = IERC20(outToken).balanceOf(address(this));
 
-        // Verify and return the output amount (amount of currency1 received by this contract)
-        amountOut = IERC20(Currency.unwrap(key.currency1)).balanceOf(address(this));
-        require(amountOut >= minAmountOut, "Insufficient output amount");
+        universalRouter.execute(commandsBytes, inputs, deadline);
+
+        uint256 afterBal = IERC20(outToken).balanceOf(address(this));
+        amountOut = afterBal - beforeBal;
+        require(amountOut >= minAmountOut, "INSUFFICIENT_OUT");
         return amountOut;
     }
 
@@ -398,7 +433,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         unchecked { withdrawalCount++; }
 
         // Interactions
-        USDC.safeTransfer(to, amountUsdc);
+        SafeERC20.safeTransfer(USDC, to, amountUsdc);
 
         emit WithdrawnUSDC(msg.sender, to, amountUsdc, balanceUsdc[msg.sender], totalUsdc);
     }
@@ -422,46 +457,32 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
 
         // Interactions: refund any over‑cap amount back to the user in USDC.
         if (refund > 0) {
-            USDC.safeTransfer(user, refund);
+            SafeERC20.safeTransfer(USDC, user, refund);
         }
 
         emit DepositedUSDC(user, credit, balanceUsdc[user], totalUsdc);
     }
 
-    // ========= Uniswap v4 Types + Helper =========
-
-    /// Uniswap v4 `Currency` newtype (address wrapper). We use it for typed PoolKey declarations.
-    type Currency is address;
-
-    /// Minimal v4 PoolKey type used for validation/documentation in the internal swap helper.
-    struct PoolKey {
-        Currency currencyIn;   // token in (ERC‑20) or WETH for ETH routes
-        Currency currencyOut;  // token out (USDC)
-        uint24 fee;            // pool fee tier
-    }
-
     /**
      * Internal helper that executes a single exact‑input swap to USDC via Universal Router using caller‑provided
      * `commands` and `inputs`. Validates the typed PoolKey matches `tokenIn` and USDC for auditability.
-     * This function centralizes approval/execute/measure‑delta patterns and ensures consistent min‑out + cap handling upstream.
      */
     function _swapExactInputSingle(
         address tokenIn,
         uint256 amountIn,
-        uint256 /* minUsdcOut (enforced within encoded inputs) */,
-        bytes memory commands,
+        bytes memory commandsBytes,
         bytes[] memory inputs,
         PoolKey calldata key,
         uint256 deadline
     ) internal returns (uint256 usdcOut) {
-        // Validate that the typed PoolKey corresponds to the intended in/out assets.
-        require(Currency.unwrap(key.currencyOut) == address(USDC), "PoolKey: out != USDC");
-        require(Currency.unwrap(key.currencyIn) == tokenIn, "PoolKey: in mismatch");
+        require(Currency.unwrap(key.currency1) == address(USDC), "PoolKey: out != USDC");
+        require(Currency.unwrap(key.currency0) == tokenIn, "PoolKey: in mismatch");
 
         uint256 beforeUsdc = USDC.balanceOf(address(this));
-        IERC20(tokenIn).safeIncreaseAllowance(address(router), amountIn);
-        router.execute(commands, inputs, deadline);
-        IERC20(tokenIn).forceApprove(address(router), 0);
+        SafeERC20.safeApprove(IERC20(tokenIn), address(universalRouter), 0);
+        SafeERC20.safeApprove(IERC20(tokenIn), address(universalRouter), amountIn);
+        universalRouter.execute(commandsBytes, inputs, deadline);
+        SafeERC20.safeApprove(IERC20(tokenIn), address(universalRouter), 0);
         uint256 afterUsdc = USDC.balanceOf(address(this));
         usdcOut = afterUsdc - beforeUsdc;
     }
