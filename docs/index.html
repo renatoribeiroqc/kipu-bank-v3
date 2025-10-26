@@ -281,7 +281,7 @@
       $("tokenIn").value = usdc;
       $("amountIn").value = '1000000';
       btnEth.disabled = true; btnTok.disabled = false; btnAppr.disabled = false;
-      $("s2").textContent = "USDC selected: Click ‘Approve Token’, then ‘Deposit Token → USDC’.";
+      $("s2").textContent = "USDC selected: Prefer ‘Deposit USDC’ in Remix or use this page: Approve then Deposit Token → USDC (direct path used).";
     } else {
       btnEth.disabled = true; btnTok.disabled = false; btnAppr.disabled = false;
       if (!ethers.isAddress($("tokenIn").value.trim())) $("tokenIn").classList.add('is-invalid');
