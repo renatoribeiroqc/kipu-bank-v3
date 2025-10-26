@@ -68,6 +68,30 @@ Steps (Remix):
 3) Deploy with the addresses above and an initial `bankCapUsdc6` (e.g., `5_000_000` for $5,000.000).
 4) Verify on a block explorer (match compiler + optimizer settings).
 
+### Network Addresses
+
+- `USDC` (testnet): Use the official USDC (or USDC.e) token for your testnet, or deploy a mock for local testing. Verify 6 decimals.
+- `universalRouter`: Use Uniswap’s Universal Router address for your chain. Find it by:
+  - Checking Uniswap docs/repo for deployment addresses for your network.
+  - Searching your chain explorer for a verified contract named “UniversalRouter” from Uniswap (code should expose `execute(bytes,bytes[],uint256)`).
+  - Do not use an EOA; it must be a contract.
+- `permit2` (optional): Official Permit2 on Ethereum mainnet is `0x000000000022D473030F116dDEE9F6B43aC78BA3`. For testnets, check Uniswap’s docs or explorer for a verified “Permit2” contract, or pass the zero address if unused.
+
+Tip: If your testnet does not have a v4‑compatible Universal Router deployment, use the included mocks in `tests/KipuBankV3_test.sol` to validate flows in Remix, or deploy on a network where the router exists.
+
+### Sepolia Example (Remix constructor values)
+
+Use the following known addresses on Sepolia for a quick deploy:
+
+- `usdc` → `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` (Circle USDC on Sepolia)
+- `router` → `0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b` (Uniswap v4 Universal Router on Sepolia)
+- `permit2_` → `0x000000000022D473030F116dDEE9F6B43aC78BA3` (Permit2)
+- `_bankCapUsdc6` → `1000` (USD‑6 integer; this equals $0.001)
+
+Notes:
+- Ethers v6 enforces EIP‑55 checksum: paste addresses exactly as above (or all lowercase).
+- `_bankCapUsdc6` uses 6‑decimals. Example conversions: `100000000` → $100.00, `5000000000` → $5,000.00. Enter plain integers (no underscores).
+
 ---
 
 ## Interaction (Testnet)
