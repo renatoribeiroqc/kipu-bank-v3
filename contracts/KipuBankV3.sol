@@ -22,25 +22,18 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/// Minimal Universal Router interface (Uniswap v4). Concrete deployments may include additional variants.
-interface IUniversalRouter {
-    /// Executes encoded Universal Router commands with a deadline for protection against delays/MEV.
-    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable;
-}
+// Uniswap v4 and Universal Router (per Quickstart docs)
+import { UniversalRouter } from "@uniswap/universal-router/contracts/UniversalRouter.sol";
+import { Commands } from "@uniswap/universal-router/contracts/libraries/Commands.sol";
+import { IV4Router } from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
+import { Actions } from "@uniswap/v4-periphery/src/libraries/Actions.sol";
+import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import { IPermit2 } from "@uniswap/permit2/src/interfaces/IPermit2.sol";
+import { Currency } from "@uniswap/v4-core/src/types/Currency.sol";
+import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 
-/// Minimal Permit2 interface placeholder. Present for extensibility; not strictly required in the basic path.
-interface IPermit2 {
-    // NOTE: This is a minimalized signature to demonstrate integration for the assignment and compiles fine.
-    // When wiring against a real Permit2 deployment, align the interface exactly with the deployed ABI.
-    function permitTransferFrom(
-        address owner,
-        address token,
-        uint256 amount,
-        address to,
-        uint256 deadline,
-        bytes calldata signature
-    ) external;
-}
+using StateLibrary for IPoolManager;
 
 /// Chainlink Aggregator v3 interface for read‑only price views (kept from V2 for observability/analytics).
 interface AggregatorV3Interface {
@@ -80,7 +73,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
     IERC20 public immutable USDC;
 
     /// Uniswap v4 Universal Router used to execute swaps (exact input, single or multi‑hop).
-    IUniversalRouter public immutable universalRouter;
+    UniversalRouter public immutable router;
 
     /// Optional Permit2 instance for future permit‑based deposits (not required for basic flow).
     IPermit2 public immutable permit2;
@@ -135,19 +128,19 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
     constructor(
         address admin,
         IERC20 usdc,
-        IUniversalRouter router,
+        UniversalRouter router_,
         IPermit2 permit2_,
         uint256 _bankCapUsdc6
     ) {
         require(admin != address(0), "admin=0");
         require(address(usdc) != address(0), "usdc=0");
-        require(address(router) != address(0), "router=0");
+        require(address(router_) != address(0), "router=0");
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
 
         USDC = usdc;
-        universalRouter = router;
+        router = router_;
         permit2 = permit2_;
         bankCapUsdc6 = _bankCapUsdc6;
     }
@@ -258,7 +251,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         uint256 beforeBal = USDC.balanceOf(address(this));
 
         // Execute router swap. Router consumes msg.value as ETH input and returns USDC to this contract.
-        universalRouter.execute{value: msg.value}(commands, inputs, deadline);
+        router.execute{value: msg.value}(commands, inputs, deadline);
 
         uint256 afterBal = USDC.balanceOf(address(this));
         uint256 usdcOut = afterBal - beforeBal;
@@ -320,23 +313,71 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         token.safeTransferFrom(msg.sender, address(this), amountIn);
 
         // Grant spend approval to the router for the exact amount (minimize long‑lived approvals).
-        token.safeIncreaseAllowance(address(universalRouter), amountIn);
+        token.safeIncreaseAllowance(address(router), amountIn);
 
         uint256 beforeUsdc = USDC.balanceOf(address(this));
         // Execute router actions which will take `token` from this contract and pay USDC here.
-        universalRouter.execute( commands, inputs, deadline );
+        router.execute( commands, inputs, deadline );
         uint256 afterUsdc = USDC.balanceOf(address(this));
         uint256 usdcOut = afterUsdc - beforeUsdc;
 
         // Best effort to reset allowance back to zero for the amount used (defensive; optional for gas).
         // If the router partially consumes, we set allowance to 0 to avoid leftover approvals.
-        token.forceApprove(address(universalRouter), 0);
+        token.forceApprove(address(router), 0);
 
         emit SwappedToUSDC(msg.sender, address(token), amountIn, usdcOut);
 
         _creditWithCapAndRefund(msg.sender, usdcOut);
     }
 
+    
+    /**
+     * Example typed swap function following the Uniswap v4 Quickstart. It constructs a V4 swap (exact input, single)
+     * using Commands and Actions, and executes via the Universal Router with a deadline. The function returns the
+     * amount of `key.currency1` received by this contract.
+     */
+    function swapExactInputSingle(
+        PoolKey calldata key,
+        uint128 amountIn,
+        uint128 minAmountOut,
+        uint256 deadline
+    ) external returns (uint256 amountOut) {
+        // Encode the Universal Router command for a v4 swap
+        bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
+        bytes[] memory inputs = new bytes[](1);
+
+        // Encode the V4Router actions sequence: exact-in single, settle, then take output
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.SWAP_EXACT_IN_SINGLE),
+            uint8(Actions.SETTLE_ALL),
+            uint8(Actions.TAKE_ALL)
+        );
+
+        // Prepare parameters matching the actions sequence
+        bytes[] memory params = new bytes[](3);
+        params[0] = abi.encode(
+            IV4Router.ExactInputSingleParams({
+                poolKey: key,
+                zeroForOne: true, // swap currency0 -> currency1; caller must set poolKey ordering accordingly
+                amountIn: amountIn,
+                amountOutMinimum: minAmountOut,
+                hookData: bytes("")
+            })
+        );
+        params[1] = abi.encode(key.currency0, amountIn);        // settle input
+        params[2] = abi.encode(key.currency1, minAmountOut);    // take output
+
+        // Combine actions and params into inputs for the router
+        inputs[0] = abi.encode(actions, params);
+
+        // Execute the swap via the router
+        router.execute(commands, inputs, deadline);
+
+        // Verify and return the output amount (amount of currency1 received by this contract)
+        amountOut = IERC20(Currency.unwrap(key.currency1)).balanceOf(address(this));
+        require(amountOut >= minAmountOut, "Insufficient output amount");
+        return amountOut;
+    }
 
     // ========= Withdrawals =========
 
@@ -410,16 +451,17 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         uint256 /* minUsdcOut (enforced within encoded inputs) */,
         bytes memory commands,
         bytes[] memory inputs,
-        PoolKey calldata key
+        PoolKey calldata key,
+        uint256 deadline
     ) internal returns (uint256 usdcOut) {
         // Validate that the typed PoolKey corresponds to the intended in/out assets.
         require(Currency.unwrap(key.currencyOut) == address(USDC), "PoolKey: out != USDC");
         require(Currency.unwrap(key.currencyIn) == tokenIn, "PoolKey: in mismatch");
 
         uint256 beforeUsdc = USDC.balanceOf(address(this));
-        IERC20(tokenIn).safeIncreaseAllowance(address(universalRouter), amountIn);
-        universalRouter.execute(commands, inputs);
-        IERC20(tokenIn).forceApprove(address(universalRouter), 0);
+        IERC20(tokenIn).safeIncreaseAllowance(address(router), amountIn);
+        router.execute(commands, inputs, deadline);
+        IERC20(tokenIn).forceApprove(address(router), 0);
         uint256 afterUsdc = USDC.balanceOf(address(this));
         usdcOut = afterUsdc - beforeUsdc;
     }
