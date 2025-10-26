@@ -28,12 +28,12 @@
     </div>
 
     <!-- Step 1: attach contract -->
-    <div id="cardAttach" class="card mb-3">
+    <div id="cardAttach" class="card mb-3 disabled-card">
       <div class="card-body">
         <div class="h6 mb-2">Step 1 — Contract</div>
         <label class="form-label small">Contract Address</label>
         <input id="contractAddress" class="form-control mono" type="text" placeholder="0xKipuBankV3" />
-        <button id="btnAttach" class="btn btn-outline-secondary fullw mt-2">Attach</button>
+        <button id="btnAttach" class="btn btn-outline-secondary fullw mt-2">Attach (confirm contract)</button>
         <div class="row g-2 mt-3">
           <div class="col-4">
             <div class="small text-secondary">Cap (USD-6)</div>
@@ -48,7 +48,7 @@
             <div id="version" class="mono">—</div>
           </div>
         </div>
-        <div id="s1" class="tiny text-secondary mt-2">Paste the deployed address and click Attach.</div>
+        <div id="s1" class="tiny text-secondary mt-2">Connect wallet first. Then click Attach to confirm the contract.</div>
       </div>
     </div>
 
@@ -56,6 +56,7 @@
     <div id="cardDeposit" class="card mb-3 disabled-card">
       <div class="card-body">
         <div class="h6 mb-2">Step 2 — Deposit (Swap to USDC)</div>
+        <div class="small text-secondary mb-2">USDC and Router Settings</div>
 
         <div class="row g-2">
           <div class="col-6">
@@ -69,6 +70,7 @@
         </div>
 
         <div class="row g-2 mt-2">
+          <div class="col-12 small text-secondary">Select Asset and Amount</div>
           <div class="col-6">
             <label class="form-label small">Asset Preset</label>
             <select id="preset" class="form-select mono">
@@ -99,13 +101,13 @@
         </div>
 
         <div class="d-flex gap-2 mt-3">
-          <button id="btnDepositETH" class="btn btn-success flex-fill">Deposit ETH → USDC</button>
-          <button id="btnDepositERC20" class="btn btn-primary flex-fill">Deposit Token → USDC</button>
+          <button id="btnDepositETH" class="btn btn-success flex-fill" disabled>Deposit ETH → USDC</button>
+          <button id="btnDepositERC20" class="btn btn-primary flex-fill" disabled>Deposit Token → USDC</button>
         </div>
         <div class="d-flex gap-2 mt-2">
-          <button id="btnApproveToken" class="btn btn-outline-secondary flex-fill">Approve Token (ERC-20)</button>
+          <button id="btnApproveToken" class="btn btn-outline-secondary flex-fill" disabled>Approve Token (ERC-20)</button>
         </div>
-        <div id="s2" class="tiny text-secondary mt-2">Builds a Universal Router payload for a single-hop exact-in to USDC and deposits.</div>
+        <div id="s2" class="tiny text-secondary mt-2">For ETH: click “Deposit ETH → USDC”. For USDC or Custom ERC‑20: click “Approve Token (ERC‑20)”, then “Deposit Token → USDC”.</div>
       </div>
     </div>
 
@@ -218,6 +220,11 @@
     const net = await provider.getNetwork();
     $("network").textContent = `Connected: ${net.name ?? "unknown"} (chainId ${net.chainId})`;
     $("me").value = me;
+    // Enable Step 1 and preload default contract
+    setEnabled("cardAttach", true);
+    const def = "0xe209966a90da0bbd2e6fe06f5bc40df2b01ade51";
+    $("contractAddress").value = def;
+    $("s1").textContent = "Default contract loaded. Click Attach to confirm.";
   };
 
   // Attach contract
@@ -230,7 +237,8 @@
       setEnabled("cardDeposit", true);
       setEnabled("cardUse", true);
       setEnabled("cardLogs", true);
-      $("s1").textContent = "Attached. Ready to deposit or withdraw.";
+      $("s1").textContent = "Attached. Step 2 enabled.";
+      updatePresetState();
     } catch (e) {
       console.error(e); $("s1").textContent = e?.reason || e?.message || "Attach failed";
     }
@@ -252,20 +260,33 @@
 
   $("btnRefresh").onclick = async () => { await refreshHeader(); await refreshBalance(); };
 
-  // Preset selector: ETH sets tokenIn=0x0; USDC sets tokenIn=usdcAddr; CUSTOM leaves editable
-  $("preset").onchange = () => {
+  // Preset selector: enable relevant buttons and defaults
+  function updatePresetState() {
     const p = $("preset").value;
     const usdc = $("usdcAddr").value.trim();
+    const btnEth = $("btnDepositETH");
+    const btnTok = $("btnDepositERC20");
+    const btnAppr = $("btnApproveToken");
+    $("tokenIn").classList.remove('is-invalid');
+    $("amountIn").classList.remove('is-invalid');
     if (p === 'ETH') {
       $("tokenIn").value = ethers.ZeroAddress;
       $("amountIn").value = '0.01';
+      btnEth.disabled = false; btnTok.disabled = true; btnAppr.disabled = true;
+      $("s2").textContent = "ETH selected: Click ‘Deposit ETH → USDC’.";
     } else if (p === 'USDC') {
       $("tokenIn").value = usdc;
-      $("amountIn").value = '1000000'; // $1.00 in USDC-6 raw units (for ERC-20 flow)
+      $("amountIn").value = '1000000';
+      btnEth.disabled = true; btnTok.disabled = false; btnAppr.disabled = false;
+      $("s2").textContent = "USDC selected: Click ‘Approve Token’, then ‘Deposit Token → USDC’.";
     } else {
-      // Custom: leave as-is, user must paste address and amount
+      btnEth.disabled = true; btnTok.disabled = false; btnAppr.disabled = false;
+      if (!ethers.isAddress($("tokenIn").value.trim())) $("tokenIn").classList.add('is-invalid');
+      if (!$("amountIn").value.trim()) $("amountIn").classList.add('is-invalid');
+      $("s2").textContent = "Custom token: Paste token address, Approve, then Deposit Token → USDC.";
     }
-  };
+  }
+  $("preset").onchange = updatePresetState;
 
   // Approve ERC-20 to KipuBankV3 for amountIn
   $("btnApproveToken").onclick = async () => {
