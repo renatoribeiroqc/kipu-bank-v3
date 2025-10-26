@@ -30,9 +30,9 @@ KipuBankV3 upgrades KipuBankV2 into a USDC‑denominated vault that accepts ETH,
   - `bankCapUsdc6`, `totalUsdc`, `balanceUsdc[user]`
 - Core functions:
   - `depositUSDC(uint256 amount)`
-  - `depositETH(bytes commands, bytes[] inputs, uint256 minUsdcOut)` — generic Universal Router call; encode min‑out in inputs
-  - `depositArbitraryToken(IERC20 token, uint256 amountIn, bytes commands, bytes[] inputs, uint256 minUsdcOut)` — generic router for ERC‑20
-  - `_swapExactInputSingle(address tokenIn, uint256 amountIn, uint256 minUsdcOut, bytes commands, bytes[] inputs, PoolKey key)` — internal helper using v4 types (`PoolKey`, `Currency`) for validation while executing provided router payload
+  - `depositETH(bytes commands, bytes[] inputs, uint256 minUsdcOut, uint256 deadline)` — generic Universal Router call; encode min‑out in inputs; passes deadline to router
+  - `depositArbitraryToken(IERC20 token, uint256 amountIn, bytes commands, bytes[] inputs, uint256 minUsdcOut, uint256 deadline)` — generic router for ERC‑20 with deadline
+  - `_swapExactInputSingle(address tokenIn, uint256 amountIn, uint256 minUsdcOut, bytes commands, bytes[] inputs, PoolKey key)` — internal helper using v4 types (`PoolKey`, `Currency`) for validation while executing provided router payload (your `commands/inputs` must include min‑out and will be executed with the external deadline)
   - `withdrawUSDC(uint256 amountUsdc, address to)`
   - `adminRecover(address user, uint256 newUsdc, string reason)`
 
@@ -75,8 +75,8 @@ Direct USDC deposit:
 
 ETH / Arbitrary token deposit via Router:
 - Prepare Universal Router `commands` and `inputs` encoding an exact‑input route to USDC (single or multi‑hop), including `amountOutMin`.
-- For ETH: call `depositETH(commands, inputs, minUsdcOut)` with `value` set. Contract pre‑screens `minUsdcOut` vs cap, then executes.
-- For ERC‑20: approve KipuBankV3 to pull `token`, then call `depositArbitraryToken(token, amount, commands, inputs, minUsdcOut)`.
+- For ETH: call `depositETH(commands, inputs, minUsdcOut, deadline)` with `value` set. Contract pre‑screens `minUsdcOut` vs cap, then executes with the given `deadline`.
+- For ERC‑20: approve KipuBankV3 to pull `token`, then call `depositArbitraryToken(token, amount, commands, inputs, minUsdcOut, deadline)`.
 
 Withdraw USDC:
 - Call `withdrawUSDC(amountUsdc, to)`; respects the $1,000 USD‑6 per‑tx limit and your balance.

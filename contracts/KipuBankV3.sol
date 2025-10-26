@@ -24,7 +24,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 /// Minimal Universal Router interface (Uniswap v4). Concrete deployments may include additional variants.
 interface IUniversalRouter {
-    function execute(bytes calldata commands, bytes[] calldata inputs) external payable;
+    /// Executes encoded Universal Router commands with a deadline for protection against delays/MEV.
+    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable;
 }
 
 /// Minimal Permit2 interface placeholder. Present for extensibility; not strictly required in the basic path.
@@ -243,7 +244,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
      *
      * Security: The router executes against tokens owned by this contract. We measure USDC delta out and apply cap.
      */
-    function depositETH(bytes calldata commands, bytes[] calldata inputs, uint256 minUsdcOut)
+    function depositETH(bytes calldata commands, bytes[] calldata inputs, uint256 minUsdcOut, uint256 deadline)
         external
         payable
         nonReentrant
@@ -257,7 +258,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         uint256 beforeBal = USDC.balanceOf(address(this));
 
         // Execute router swap. Router consumes msg.value as ETH input and returns USDC to this contract.
-        universalRouter.execute{value: msg.value}(commands, inputs);
+        universalRouter.execute{value: msg.value}(commands, inputs, deadline);
 
         uint256 afterBal = USDC.balanceOf(address(this));
         uint256 usdcOut = afterBal - beforeBal;
@@ -286,15 +287,16 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         uint256 amountIn,
         bytes calldata commands,
         bytes[] calldata inputs,
-        uint256 minUsdcOut
+        uint256 minUsdcOut,
+        uint256 deadline
     ) external nonReentrant {
         if (amountIn == 0) revert AmountZero();
 
         // Direct USDC path: pull and credit here (can't call external nonReentrant function internally).
         if (token == USDC) {
             USDC.safeTransferFrom(msg.sender, address(this), amountIn);
-            uint256 remaining = capRemaining();
-            uint256 credit = amountIn <= remaining ? amountIn : remaining;
+            uint256 remCap = capRemaining();
+            uint256 credit = amountIn <= remCap ? amountIn : remCap;
             uint256 refund = amountIn - credit;
             if (credit == 0) revert BankCapExceeded(totalUsdc + amountIn, bankCapUsdc6);
 
@@ -322,13 +324,13 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
 
         uint256 beforeUsdc = USDC.balanceOf(address(this));
         // Execute router actions which will take `token` from this contract and pay USDC here.
-        universalRouter.execute( commands, inputs );
+        universalRouter.execute( commands, inputs, deadline );
         uint256 afterUsdc = USDC.balanceOf(address(this));
         uint256 usdcOut = afterUsdc - beforeUsdc;
 
         // Best effort to reset allowance back to zero for the amount used (defensive; optional for gas).
         // If the router partially consumes, we set allowance to 0 to avoid leftover approvals.
-        token.safeApprove(address(universalRouter), 0);
+        token.forceApprove(address(universalRouter), 0);
 
         emit SwappedToUSDC(msg.sender, address(token), amountIn, usdcOut);
 
@@ -417,7 +419,7 @@ contract KipuBankV3 is AccessControl, ReentrancyGuard {
         uint256 beforeUsdc = USDC.balanceOf(address(this));
         IERC20(tokenIn).safeIncreaseAllowance(address(universalRouter), amountIn);
         universalRouter.execute(commands, inputs);
-        IERC20(tokenIn).safeApprove(address(universalRouter), 0);
+        IERC20(tokenIn).forceApprove(address(universalRouter), 0);
         uint256 afterUsdc = USDC.balanceOf(address(this));
         usdcOut = afterUsdc - beforeUsdc;
     }
