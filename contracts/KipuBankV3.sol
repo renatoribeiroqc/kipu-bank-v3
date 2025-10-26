@@ -45,7 +45,9 @@ interface IUniversalRouter {
     function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable;
 }
 
-interface IPermit2 { /* placeholder for future use */ }
+interface IPermit2 {
+    function approve(address token, address spender, uint160 amount, uint48 expiration) external;
+}
 
 /// Chainlink Aggregator v3 interface for read‑only price views (kept from V2 for observability/analytics).
 interface AggregatorV3Interface {
@@ -217,6 +219,14 @@ contract KipuBankV3 is ReentrancyGuardLite, AdminControl {
     /// Admin: register or update a Chainlink Aggregator for a token.
     function setPriceFeed(address token, AggregatorV3Interface feed) external onlyAdmin {
         priceFeed[token] = feed;
+    }
+
+    /// Optional: Approve Universal Router via Permit2 (helper mirroring Uniswap docs)
+    function approveTokenWithPermit2(address token, uint160 amount, uint48 expiration) external onlyAdmin {
+        require(address(permit2) != address(0), "permit2=0");
+        // Approve Permit2 to pull from this contract, then grant router allowance via Permit2
+        SafeERC20.safeApprove(IERC20(token), address(permit2), type(uint256).max);
+        permit2.approve(token, address(universalRouter), amount, expiration);
     }
 
     /// Quote a token amount to USD‑6 using latestRoundData() with hygiene checks (answeredInRound and 1h staleness).
